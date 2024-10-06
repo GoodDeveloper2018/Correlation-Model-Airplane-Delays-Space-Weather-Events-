@@ -3,93 +3,101 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import confusion_matrix, classification_report
-from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
-import nltk
 
-# Ensure nltk packages are downloaded
-nltk.download('punkt')
-nltk.download('stopwords')
-nltk.download('wordnet')
+# Load the datasets
+flight_data_path = 'flight_data_file_path'
+geomagnetic_storm_data_path = 'geomagnetic_storm_data_file_path'
 
-# Load datasets
-flight_data = pd.read_csv('flight_delays.csv')
-space_weather_data = pd.read_csv('space_weather.csv')
+flight_data = pd.read_csv(flight_data_path)
+geomagnetic_storm_data = pd.read_csv(geomagnetic_storm_data_path)
 
-# Merge datasets on date or appropriate key
-data = pd.merge(flight_data, space_weather_data, on='date')
+# Strip whitespace from column names
+geomagnetic_storm_data.columns = geomagnetic_storm_data.columns.str.strip()
 
-# Text preprocessing function
-def preprocess_text(text):
-    tokens = word_tokenize(text)
-    tokens = [word.lower() for word in tokens if word.isalpha()]  # Remove punctuation and numbers
-    stop_words = set(stopwords.words('english'))
-    tokens = [word for word in tokens if not word in stop_words]
-    lemmatizer = WordNetLemmatizer()
-    tokens = [lemmatizer.lemmatize(word) for word in tokens]
-    return ' '.join(tokens)
+# Preprocess flight data
+flight_data.rename(columns={'Date': 'date', 'Time': 'time', 'Total Delay': 'delay'}, inplace=True)
 
-# Apply text preprocessing to a column (assuming 'remarks' column exists)
-if 'remarks' in data.columns:
-    data['remarks'] = data['remarks'].apply(preprocess_text)
+# Drop unnecessary columns
+columns_to_drop = ['Terminal', 'Call Sign', 'Marketing Airline', 'General Aircraft Desc',
+                   'Max Takeoff Wt (Lbs)', 'Max Landing Wt (Lbs)', 'Intl / Dom',
+                   'Total Seats', 'Total Taxi Time', 'Direction', 'PA Airport', 'Non-PA Airport']
+flight_data.drop(columns=columns_to_drop, inplace=True)
+
+# Ensure the date columns are in the same format
+flight_data['date'] = pd.to_datetime(flight_data['date'], errors='coerce')
+geomagnetic_storm_data['date'] = pd.to_datetime(geomagnetic_storm_data['Date'], errors='coerce')
+
+# Drop rows with invalid dates
+flight_data.dropna(subset=['date'], inplace=True)
+geomagnetic_storm_data.dropna(subset=['date'], inplace=True)
+
+# Merge datasets on date
+data = pd.merge(flight_data, geomagnetic_storm_data, on='date')
+
+# Handle missing data
+data = data.dropna()
+
+# Convert delay to numeric
+data['delay'] = pd.to_numeric(data['delay'], errors='coerce')
+
+# Convert delay into a binary format: delayed (1) or not delayed (0)
+data['delay'] = data['delay'].apply(lambda x: 1 if x > 0 else 0)
+
+# Convert time to numerical format (minutes since midnight)
+data['time'] = pd.to_datetime(data['time']).dt.hour * 60 + pd.to_datetime(data['time']).dt.minute
+
+# Ensure all columns are numeric
+for column in ['Dst', 'Kp max', 'Speed', 'IMF Bt', 'IMF Bz']:
+    data[column] = pd.to_numeric(data[column].str.replace(' nT', '').str.replace(' Kp', '').str.replace('km/sec', ''), errors='coerce')
+
+# Ensure no NaN values are present in the features
+data = data.dropna(subset=['time', 'Dst', 'Ap', 'Speed', 'IMF Bt', 'IMF Bz'])
 
 # Feature selection and scaling
-features = ['departure_time', 'arrival_time', 'geomagnetic_storm', 'radio_blackout']
-if 'remarks' in data.columns:
-    features.append('remarks')  # Include preprocessed text feature if it exists
-
-# Tokenize and vectorize the text data
-from sklearn.feature_extraction.text import TfidfVectorizer
-
-if 'remarks' in data.columns:
-    vectorizer = TfidfVectorizer()
-    text_features = vectorizer.fit_transform(data['remarks']).toarray()
-    text_feature_names = vectorizer.get_feature_names_out()
-    text_df = pd.DataFrame(text_features, columns=text_feature_names)
-    data = pd.concat([data.reset_index(drop=True), text_df.reset_index(drop=True)], axis=1)
-    features.extend(text_feature_names)
-
+features = ['time', 'Dst', 'Ap', 'Speed', 'IMF Bt', 'IMF Bz']
 X = data[features]
 y = data['delay']
 
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X.drop(columns='remarks', errors='ignore'))
+# Split the data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-if 'remarks' in data.columns:
-    X_scaled = np.hstack((X_scaled, text_features))
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
 
 # Correlation matrix
-corr_matrix = data.corr()
-sns.heatmap(corr_matrix, annot=True)
+corr_matrix = data.corr(numeric_only=True)
+plt.figure(figsize=(12, 8))
+sns.heatmap(corr_matrix, annot=True, cmap='coolwarm')
 plt.title('Correlation Matrix')
 plt.show()
 
-# K-means clustering
-kmeans = KMeans(n_clusters=2)
-data['cluster'] = kmeans.fit_predict(X_scaled)
-
-sns.scatterplot(x='departure_time', y='arrival_time', hue='cluster', data=data)
-plt.title('K-means Clustering')
-plt.show()
-
 # Logistic Regression
-logreg = LogisticRegression()
-logreg.fit(X_scaled, y)
+logreg = LogisticRegression(max_iter=1000)
+logreg.fit(X_train_scaled, y_train)
+
+# Cross-validation score
+cv_scores = cross_val_score(logreg, X_train_scaled, y_train, cv=5)
+cv_mean = np.mean(cv_scores)
+cv_std = np.std(cv_scores)
 
 # Predict and plot confusion matrix
-y_pred = logreg.predict(X_scaled)
-conf_matrix = confusion_matrix(y, y_pred)
+y_pred = logreg.predict(X_test_scaled)
+conf_matrix = confusion_matrix(y_test, y_pred)
 
-sns.heatmap(conf_matrix, annot=True, fmt='d')
+plt.figure(figsize=(8, 6))
+sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues')
 plt.title('Confusion Matrix')
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
 plt.show()
 
 # Classification report
-print(classification_report(y, y_pred))
+class_report = classification_report(y_test, y_pred, output_dict=True)
+class_report_text = classification_report(y_test, y_pred)
 
 class CorrelationOutcome:
     def __init__(self, logistic_model, threshold=0.5):
@@ -104,14 +112,70 @@ class CorrelationOutcome:
 
     def conclusive_sentence(self, accuracy):
         if accuracy > 0.7:  # Example threshold for determining a significant correlation
-            return "True: There is a significant correlation between space weather events and flight delays."
+            return "True: There is a significant correlation between geomagnetic storm intensity (Dst index) and flight delays."
         else:
-            return "False: There is no significant correlation between space weather events and flight delays."
+            return "False: There is no significant correlation between geomagnetic storm intensity (Dst index) and flight delays."
 
 # Evaluate the model
 correlation_outcome = CorrelationOutcome(logreg)
-accuracy, y_pred = correlation_outcome.evaluate(X_scaled, y)
+accuracy, y_pred = correlation_outcome.evaluate(X_test_scaled, y_test)
 conclusion = correlation_outcome.conclusive_sentence(accuracy)
 
 # Print conclusive sentence
 print(conclusion)
+
+# Additional visualization of model performance
+plt.figure(figsize=(10, 6))
+sns.barplot(x=['Accuracy', 'Precision', 'Recall', 'F1-Score'], y=[accuracy,
+             class_report['1']['precision'],
+             class_report['1']['recall'],
+             class_report['1']['f1-score']])
+plt.title('Model Performance Metrics')
+plt.ylabel('Score')
+plt.ylim(0, 1)
+plt.show()
+
+# Summary of findings
+summary_of_findings = f"""
+Summary of Findings:
+Cross-validation accuracy: {cv_mean:.2f} ± {cv_std:.2f}
+Confusion Matrix:
+{conf_matrix}
+{classification_report(y_test, y_pred)}
+"""
+print(summary_of_findings)
+
+# Logistic Regression Decision Boundary Plot (for two features)
+def plot_decision_boundary(X, y, model, features):
+    x_min, x_max = X[:, 0].min() - 1, X[:, 0].max() + 1
+    y_min, y_max = X[:, 1].min() - 1, X[:, 1].max() + 1
+    xx, yy = np.meshgrid(np.arange(x_min, x_max, 0.01),
+                         np.arange(y_min, y_max, 0.01))
+    Z = model.predict(np.c_[xx.ravel(), yy.ravel()])
+    Z = Z.reshape(xx.shape)
+    plt.contourf(xx, yy, Z, alpha=0.4, cmap=plt.cm.Spectral)
+    plt.scatter(X[:, 0], X[:, 1], c=y, s=20, edgecolor='k')
+    plt.xlabel(features[0])
+    plt.ylabel(features[1])
+    plt.title('Logistic Regression Decision Boundary')
+
+# Select two features for decision boundary plot
+selected_features = ['Dst', 'Speed']
+X_selected = data[selected_features].values
+y_selected = data['delay'].values
+
+# Split the data for selected features
+X_train_sel, X_test_sel, y_train_sel, y_test_sel = train_test_split(X_selected, y_selected, test_size=0.2, random_state=42)
+
+# Scale the selected features
+X_train_sel_scaled = scaler.fit_transform(X_train_sel)
+X_test_sel_scaled = scaler.transform(X_test_sel)
+
+# Train the model with selected features
+logreg_sel = LogisticRegression(max_iter=1000)
+logreg_sel.fit(X_train_sel_scaled, y_train_sel)
+
+# Plot the decision boundary
+plt.figure(figsize=(10, 6))
+plot_decision_boundary(X_test_sel_scaled, y_test_sel, logreg_sel, selected_features)
+plt.show()
